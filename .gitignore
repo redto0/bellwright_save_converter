@@ -1,0 +1,21 @@
+# Python
+__pycache__/
+*.py[cod]
+*.egg-info/
+.venv/
+venv/
+build/
+dist/
+
+# Editors
+.vscode/
+.idea/
+
+# Never commit game save data or archives of it.
+# Saves are multi-MB binaries containing another person's world; they have no
+# business in version control.
+*.sav
+*.sav_backup*
+*.vdf
+*.zip
+*.7z
