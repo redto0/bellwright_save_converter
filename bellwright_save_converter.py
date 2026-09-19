@@ -20,6 +20,7 @@ Standard library only; no install step.
 
 from __future__ import annotations
 
+import contextlib
 import dataclasses
 import datetime as _dt
 import struct
@@ -571,3 +572,104 @@ def execute_import(
         "planned": len(planned),
         "backup": str(backup_dir) if backup_dir else None,
     }
+
+
+def _safe_zip_members(archive) -> list[str]:
+    """Flat filenames only.
+
+    The zips this tool writes are flat by design, so anything carrying a path
+    separator, a drive, or a parent reference did not come from here and is
+    rejected rather than extracted somewhere unexpected.
+    """
+    names = []
+    for name in archive.namelist():
+        if name.endswith("/"):
+            continue
+        if "/" in name or "\\" in name or Path(name).is_absolute() or ".." in name:
+            raise TransferError(f"Refusing to extract unsafe archive entry: {name!r}")
+        names.append(name)
+    return names
+
+
+def export_zip(
+    source: Path,
+    dest_zip: Path,
+    names: list[str] | None = None,
+    include_backups: bool = True,
+    log=print,
+) -> Path:
+    """Zip up save sets to hand to the other player.
+
+    The archive is flat -- just the save files -- so the person receiving it can
+    import it without caring which Steam ID folder it came out of.
+    """
+    import zipfile
+
+    planned = plan_import(source, Path("."), names=names, include_backups=include_backups)
+    if not planned:
+        raise TransferError(f"No save files to export from {source}")
+
+    dest_zip = dest_zip.with_suffix(".zip")
+    dest_zip.parent.mkdir(parents=True, exist_ok=True)
+    with zipfile.ZipFile(dest_zip, "w", zipfile.ZIP_DEFLATED) as archive:
+        for item in planned:
+            archive.write(item.source, arcname=item.source.name)
+            log(f"  + {item.source.name}")
+    log(f"Wrote {dest_zip} ({dest_zip.stat().st_size / 1e6:.1f} MB)")
+    return dest_zip
+
+
+def snapshot(folder: Path, tag: str = "manual", log=print) -> Path | None:
+    """Zip a save folder so the current state can be restored later."""
+    import zipfile
+
+    if not folder.is_dir():
+        return None
+    files = [p for p in sorted(folder.iterdir()) if p.is_file() and is_save_file(p)]
+    if not files:
+        log(f"Nothing to back up in {folder}")
+        return None
+
+    dest = backups_root() / f"{tag}-{_timestamp()}.zip"
+    dest.parent.mkdir(parents=True, exist_ok=True)
+    with zipfile.ZipFile(dest, "w", zipfile.ZIP_DEFLATED) as archive:
+        for path in files:
+            archive.write(path, arcname=path.name)
+    log(f"Backed up {len(files)} file(s) to {dest}")
+    return dest
+
+
+def list_snapshots() -> list[Path]:
+    """Existing snapshots, newest first."""
+    root = backups_root()
+    if not root.is_dir():
+        return []
+    return sorted(root.glob("*.zip"), key=lambda p: p.stat().st_mtime, reverse=True)
+
+
+@contextlib.contextmanager
+def resolve_source(source: Path):
+    """Yield a folder of save files, unpacking a .zip first if needed.
+
+    Lets import accept either a folder handed over on a USB stick or a zip
+    produced by export, which is what makes the swap symmetric.
+    """
+    import shutil
+    import tempfile
+    import zipfile
+
+    if source.is_dir():
+        yield source
+        return
+    if source.suffix.lower() != ".zip" or not source.is_file():
+        raise TransferError(f"Not a save folder or .zip archive: {source}")
+
+    tmp = Path(tempfile.mkdtemp(prefix="bsc-"))
+    try:
+        with zipfile.ZipFile(source) as archive:
+            for name in _safe_zip_members(archive):
+                with archive.open(name) as src, (tmp / name).open("wb") as dst:
+                    shutil.copyfileobj(src, dst)
+        yield tmp
+    finally:
+        shutil.rmtree(tmp, ignore_errors=True)
