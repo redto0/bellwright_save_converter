@@ -17,6 +17,7 @@ the next launch, choose the **local** files.
 ## Usage
 
 Double-click `bellwright_save_converter.py` to open the window, or use the command line below.
+Keep the `bellwright` folder next to it, including when copying the tool to another PC.
 
 ### Take over a world
 

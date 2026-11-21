@@ -1,5 +1,20 @@
 # Technical notes
 
+## Code layout
+
+`bellwright_save_converter.py` is a launcher for the `bellwright` package. Standard library only.
+
+| Module | Responsibility |
+|---|---|
+| `saves.py` | Save header parsing and grouping files by character |
+| `steam.py` | Steam account, save folder and library discovery |
+| `transfer.py` | Import, export, snapshots and the game-running check |
+| `oodle.py` | Locating and calling the Oodle library |
+| `protobuf.py` | Schema-less protobuf reading and rewriting |
+| `respawn.py` | Unpacking and repacking saves; ore node removal |
+| `cli.py` | Command line |
+| `gui.py` | Tkinter window |
+
 ## Transfers
 
 Bellwright stores each world under the host's Steam ID:
@@ -115,7 +130,7 @@ The tool looks for one in this order:
 
 1. `--oodle PATH`
 2. the `BELLWRIGHT_OODLE` environment variable
-3. the script's folder
+3. the folder containing `bellwright_save_converter.py`
 4. every Steam library (slow; copy the DLL next to the script to skip this)
 
 Only `OodleLZ_Decompress` and `OodleLZ_Compress` (Kraken, level Normal) are used. Oodle is
