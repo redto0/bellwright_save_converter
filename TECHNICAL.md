@@ -145,9 +145,16 @@ the v8 body with the v7 deserializer and aborts with `BulkData compressed header
 ## Building the .exe
 
 `.github/workflows/build.yml` builds a single windowed executable with PyInstaller on a Windows
-runner. Every push to `main` produces it as a workflow artifact; pushing a `v*` tag also publishes
-it as a GitHub Release. Before uploading, the workflow runs the built exe with `--help` and
-requires a clean exit, which proves the bundle imports everything it needs.
+runner. Before publishing, it runs the built exe with `--help` and requires a clean exit, which
+proves the bundle imports everything it needs.
+
+| Channel | Trigger | Release |
+|---|---|---|
+| Rolling | Every push to `main` | The `rolling` pre-release, replaced each time |
+| Stable | Pushing a `v*` tag, e.g. `git tag v1.1.0 && git push origin v1.1.0` | A release marked Latest |
+
+The README links to `releases/latest/download/BellwrightSaveConverter.exe`, which always serves
+the newest stable release. The rolling build is a pre-release so it never takes that slot.
 
 To build locally:
 
