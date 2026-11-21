@@ -26,8 +26,25 @@ def sha256(path: Path, _chunk: int = 1 << 20) -> str:
     return digest.hexdigest()
 
 
+#: Image-name prefix of the game's processes, BellwrightGame.exe and
+#: BellwrightGame-Win64-Shipping.exe. Not just "bellwright": that also matches
+#: this tool's own BellwrightSaveConverter.exe, which made a packaged build
+#: always think the game was open.
+_GAME_PROCESS_PREFIX = "bellwrightgame"
+
+
+def _game_in_process_list(csv_text: str) -> bool:
+    """True if ``tasklist /fo csv /nh`` output includes a game process."""
+    import csv
+
+    return any(
+        row and row[0].lower().startswith(_GAME_PROCESS_PREFIX)
+        for row in csv.reader(csv_text.splitlines())
+    )
+
+
 def game_is_running() -> bool:
-    """True if Bellwright looks like it is open.
+    """True if Bellwright is open.
 
     Copying under a running game risks catching a half-written save, which is
     why the manual procedure starts by closing it.
@@ -35,11 +52,9 @@ def game_is_running() -> bool:
     import subprocess
 
     try:
-        # Plain tasklist rather than /FI: the filter's wildcard semantics vary,
-        # and a substring scan over the full list is unambiguous. The real
-        # process names are BellwrightGame.exe and BellwrightGame-Win64-Shipping.
+        # CSV gives full image names; the default table truncates long ones.
         out = subprocess.run(
-            ["tasklist"],
+            ["tasklist", "/fo", "csv", "/nh"],
             capture_output=True,
             text=True,
             timeout=15,
@@ -47,7 +62,7 @@ def game_is_running() -> bool:
         ).stdout
     except (OSError, subprocess.SubprocessError):
         return False  # can't tell; don't block the user over it
-    return "bellwright" in out.lower()
+    return _game_in_process_list(out)
 
 
 def _timestamp() -> str:
