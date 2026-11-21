@@ -149,18 +149,16 @@ the v8 body with the v7 deserializer and aborts with `BulkData compressed header
 ## Building the .exe
 
 `.github/workflows/build.yml` builds a single windowed executable with PyInstaller on a Windows
-runner. Before publishing, it runs the built exe with `--help` and requires a clean exit, which
-proves the bundle imports everything it needs.
+runner, then runs it with `--help` and requires a clean exit, which proves the bundle imports
+everything it needs.
 
-| Channel | Trigger | Release |
-|---|---|---|
-| Testing | Every push to the `testing` branch | The `testing-build` pre-release, replaced each time |
-| Rolling | Every push to `main` | The `rolling` pre-release, replaced each time |
-| Stable | Pushing a `v*` tag, e.g. `git tag v1.1.0 && git push origin v1.1.0` | A release marked Latest |
-
-New work lands on `testing` first and is merged into `main` once tried. The README links to
-`releases/latest/download/BellwrightSaveConverter.exe`, which always serves the newest stable
-release; the testing and rolling builds are pre-releases, so they never take that slot.
+- Pushes to `testing` and `main` build and smoke-test the exe, keeping it only as a workflow
+  artifact. New work lands on `testing`, is tried locally, then merged into `main`.
+- Pushing a `v*` tag, e.g. `git tag -a v1.1.0 -m v1.1.0 && git push origin v1.1.0`, publishes the
+  exe as a release.
+- There is only ever one release. Every run on `main` or a tag deletes any release other than the
+  newest; old version tags stay in git. The README's download link,
+  `releases/latest/download/BellwrightSaveConverter.exe`, therefore always serves that release.
 
 To build locally:
 

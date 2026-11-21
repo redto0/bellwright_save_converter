@@ -11,9 +11,6 @@ Move a Bellwright world between two Steam accounts, and reset harvested ore node
    is not code-signed: click **More info**, then **Run anyway**.
 3. To keep it handy, right-click its taskbar icon while it is open and choose **Pin to taskbar**.
 
-The newest untested build is always available as the
-[rolling pre-release](https://github.com/redto0/bellwright_save_converter/releases/tag/rolling).
-
 Ore respawn needs an Oodle library (`oo2core_9_win64.dll`) from a game installed on the same PC,
 such as Warframe or Destiny 2. It is found automatically; see [TECHNICAL.md](TECHNICAL.md#oodle).
 

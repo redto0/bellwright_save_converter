@@ -1,11 +1,8 @@
 name: Build Windows app
 
-# Release channels:
-#   testing  every push to the testing branch replaces the "testing-build"
-#            pre-release, for trying changes before they reach main
-#   rolling  every push to main replaces the "rolling" pre-release
-#   stable   pushing a tag like v1.0.0 publishes a release marked Latest, which
-#            is what the README's download link points at
+# Pushes to main and testing build and smoke-test the exe; the result is kept
+# as a workflow artifact only. Pushing a tag like v1.0.2 publishes it as the
+# one and only release, which is what the README's download link points at.
 on:
   push:
     branches: [main, testing]
@@ -58,64 +55,58 @@ jobs:
           name: BellwrightSaveConverter
           path: dist/BellwrightSaveConverter.exe
 
-  prerelease:
-    if: github.ref == 'refs/heads/main' || github.ref == 'refs/heads/testing'
+  release:
+    # Keeps exactly one release. A v* tag publishes the new version; every run
+    # on main or a tag then removes any other release, so the page never
+    # accumulates old versions.
+    if: github.ref == 'refs/heads/main' || startsWith(github.ref, 'refs/tags/v')
     needs: build
     runs-on: ubuntu-latest
     permissions:
       contents: write
-    # Two quick pushes to one branch must not interleave the delete and the
-    # re-create.
+    # A tag and main pushed together must not prune at the same time.
     concurrency:
-      group: prerelease-${{ github.ref_name }}
+      group: releases
       cancel-in-progress: false
     env:
-      # The testing tag is not called "testing" so it never shares a name with
-      # the branch, which would make git refs ambiguous.
-      TAG: ${{ github.ref_name == 'main' && 'rolling' || 'testing-build' }}
-      TITLE: ${{ github.ref_name == 'main' && 'Rolling build' || 'Testing build' }}
+      GH_TOKEN: ${{ github.token }}
+      GH_REPO: ${{ github.repository }}
     steps:
       - uses: actions/download-artifact@v4
+        if: github.ref_type == 'tag'
         with:
           name: BellwrightSaveConverter
 
-      - name: Replace the pre-release
-        env:
-          GH_TOKEN: ${{ github.token }}
-          GH_REPO: ${{ github.repository }}
+      - name: Publish the release
+        if: github.ref_type == 'tag'
         run: |
-          gh release delete "$TAG" --cleanup-tag --yes || true
-          # Also drop the tag if a previous run left it without a release, so
-          # the new release is tagged at this commit rather than the old one.
-          gh api -X DELETE "repos/$GH_REPO/git/refs/tags/$TAG" || true
-          gh release create "$TAG" BellwrightSaveConverter.exe \
-            --target "$GITHUB_SHA" \
-            --prerelease \
-            --title "$TITLE" \
-            --notes "Newest build of $GITHUB_REF_NAME (${GITHUB_SHA::7}), replaced on every push. For the stable version, use the release marked Latest."
-
-  stable:
-    if: startsWith(github.ref, 'refs/tags/v')
-    needs: build
-    runs-on: ubuntu-latest
-    permissions:
-      contents: write
-    steps:
-      - uses: actions/download-artifact@v4
-        with:
-          name: BellwrightSaveConverter
-
-      - name: Publish stable release
-        env:
-          GH_TOKEN: ${{ github.token }}
-          GH_REPO: ${{ github.repository }}
-        run: |
-          # Generate notes against the previous stable release, not the
-          # rolling pre-release.
-          previous=$(gh api "repos/$GH_REPO/releases" \
-            --jq '[.[] | select(.prerelease | not) | .tag_name][0] // empty')
+          previous=$(gh api "repos/$GH_REPO/releases/latest" --jq .tag_name 2>/dev/null || true)
           gh release create "$GITHUB_REF_NAME" BellwrightSaveConverter.exe \
             --title "$GITHUB_REF_NAME" \
             --latest \
             --generate-notes \
             ${previous:+--notes-start-tag "$previous"}
+
+      - name: Remove every other release
+        run: |
+          if [ "$GITHUB_REF_TYPE" = tag ]; then
+            keep="$GITHUB_REF_NAME"
+          else
+            keep=$(gh api "repos/$GH_REPO/releases/latest" --jq .tag_name 2>/dev/null || true)
+          fi
+          keep=${keep%$'\r'}
+          # Never prune without knowing which release to keep.
+          if [ -z "$keep" ]; then
+            echo "No latest release found; nothing removed."
+            exit 0
+          fi
+          gh api "repos/$GH_REPO/releases?per_page=100" --jq '.[].tag_name' |
+          while read -r tag; do
+            tag=${tag%$'\r'}  # a stray CR must never make the kept release look different
+            [ "$tag" = "$keep" ] && continue
+            echo "Removing release $tag (keeping $keep)"
+            case "$tag" in
+              v*) gh release delete "$tag" --yes ;;  # the version tag stays in git
+              *)  gh release delete "$tag" --yes --cleanup-tag ;;
+            esac
+          done
