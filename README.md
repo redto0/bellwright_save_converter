@@ -24,16 +24,18 @@ Ownership is carried by the *folder name*, not by anything in the file. A save's
 compressed, so rewriting it would not be safe even if it were necessary — and it isn't. Any tool
 that claims to "convert" the contents of a Bellwright save is doing something you don't want.
 
-The header is read (never written) to show you which save is which:
+For transfers the header is only read, to show you which save is which:
 
 | Offset | Field |
 |---|---|
 | `0x00` | magic `VSWB` |
-| `0x04` | format version |
+| `0x04` | format version — 7 before the mid-2026 patch, 8 after; selects the deserializer |
 | `0x08` / `0x10` | created / last saved, unix epoch |
-| `0x18` | progress counter (units unknown, shown raw) |
+| `0x18` | uncompressed body size (the engine's BulkData "Read Size") |
 | `0x20` / `0x120` / `0x220` | character / map / save label |
-| `0x420`+ | compressed body — untouched |
+| `0x320` | settlement name |
+| `0x420` | world clock, in-game seconds (f64) |
+| then | UE5 compressed archive: 128 KiB chunks, Oodle Kraken, protobuf inside |
 
 ## Use it
 

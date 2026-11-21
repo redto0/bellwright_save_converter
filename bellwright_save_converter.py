@@ -30,20 +30,23 @@ from pathlib import Path
 # Save container format (reverse engineered)
 # --------------------------------------------------------------------------
 #
-# Offsets below were confirmed against 36 real save files. The file is a fixed
+# Offsets below were confirmed against real save files. The file is a fixed
 # plaintext header followed by a compressed body:
 #
 #   0x000  4      magic b"VSWB"
-#   0x004  u32    format version (7 in every observed file)
+#   0x004  u32    format version (7 before the mid-2026 patch, 8 after; the
+#                 game picks its deserializer from this, so it is not cosmetic)
 #   0x008  u64    created, unix epoch seconds
 #   0x010  u64    last saved, unix epoch seconds (matches file mtime)
-#   0x018  u64    progress counter; correlates with playtime but the units are
-#                 unproven, so it is reported raw and never labelled "hours"
+#   0x018  u64    uncompressed body size; the engine logs it as the BulkData
+#                 "Read Size", so it must match the body exactly
 #   0x020  0x100  character name, NUL-terminated UTF-8
 #   0x120  0x100  map name
 #   0x220  0x100  user-entered save label
-#   0x320  0x100  overlapping string fragments -- deliberately not parsed
-#   0x420+ ...    compressed body (entropy ~7.95-7.99 bits/byte)
+#   0x320  0x100  settlement name, plus leftover string fragments
+#   0x420  f64    world clock, in-game seconds
+#   ...           UE5 compressed archive, located by ARCHIVE_TAG (see the
+#                 harvest node section below)
 
 MAGIC = b"VSWB"
 HEADER_SIZE = 0x420
@@ -51,7 +54,7 @@ HEADER_SIZE = 0x420
 _OFF_VERSION = 0x04
 _OFF_CREATED = 0x08
 _OFF_SAVED = 0x10
-_OFF_COUNTER = 0x18
+_OFF_BODY_SIZE = 0x18
 _OFF_CHARACTER = 0x20
 _OFF_MAP = 0x120
 _OFF_LABEL = 0x220
@@ -97,7 +100,7 @@ class SaveHeader:
     version: int | None = None
     created: _dt.datetime | None = None
     saved: _dt.datetime | None = None
-    counter: int | None = None
+    body_size: int | None = None
     character: str = ""
     map_name: str = ""
     label: str = ""
@@ -131,7 +134,7 @@ def parse_header(path: Path) -> SaveHeader:
         version=struct.unpack_from("<I", buf, _OFF_VERSION)[0],
         created=_to_datetime(_read_u64(buf, _OFF_CREATED)),
         saved=_to_datetime(_read_u64(buf, _OFF_SAVED)),
-        counter=_read_u64(buf, _OFF_COUNTER),
+        body_size=_read_u64(buf, _OFF_BODY_SIZE),
         character=_read_string(buf, _OFF_CHARACTER),
         map_name=_read_string(buf, _OFF_MAP),
         label=_read_string(buf, _OFF_LABEL),
