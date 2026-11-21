@@ -124,10 +124,15 @@ python bellwright_save_converter.py respawn RedDevil_1
 with their in-game labels. It resets copper and tin surface pickups plus copper, iron and tin rock
 deposits — that set is what was tested in game.
 
+In the window, **Respawn ores...** does the same: pick a save, and it shows how many nodes will be
+reset (split by copper, tin and iron) before asking to confirm. After writing it reads the save
+back from disk and reports how many harvested ore records are left, which should be 0.
+
 - **Close the game first.** In-place writes refuse to run while it's open.
 - **A snapshot is taken first** (`pre-respawn-*.zip` in `SaveBackups`), and the edit is checked
   before writing: every other record must come through byte-identical and in order, and the
-  repacked file must decompress back to exactly the edited data.
+  repacked file must decompress back to exactly the edited data. After writing, the save is read
+  back from disk and the remaining ore records are counted.
 - **`--out FILE`** writes the result somewhere else and leaves the save alone — use it to try
   this on a copy first.
 - **Format v8 only.** A game patch that changes the save format makes it refuse until checked;

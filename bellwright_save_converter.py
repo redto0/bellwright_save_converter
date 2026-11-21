@@ -1079,6 +1079,44 @@ def respawn_nodes(raw: bytes, oodle: Oodle,
     return new_raw, removed
 
 
+def write_respawned(target: Path, new_raw: bytes, oodle: Oodle,
+                    mesh_pattern: str = ORE_MESH_PATTERN, log=print) -> int:
+    """Replace a save with its respawned version, then check it on disk.
+
+    Snapshots the folder first. Returns how many matching records the file
+    still holds when read back -- 0 means every targeted node was reset.
+    """
+    import os
+
+    snapshot(target.parent, tag="pre-respawn", log=log)
+    # Write beside the target, then swap it in, so a failure can't leave a
+    # half-written save. The temp name has no ".sav" so nothing mistakes it
+    # for a save if it is ever left behind.
+    tmp = target.with_name(f"{target.stem}.respawn-tmp")
+    tmp.write_bytes(new_raw)
+    os.replace(tmp, target)
+
+    written = target.read_bytes()
+    if written != new_raw:
+        raise TransferError(
+            f"{target.name} on disk does not match what was written; "
+            "restore the pre-respawn snapshot."
+        )
+    # Counting with the same matcher that did the removal; nothing is rebuilt.
+    remaining = strip_foliage_records(unpack_body(written, oodle), mesh_pattern)[1]
+    return sum(remaining.values())
+
+
+def ore_by_metal(removed: dict[str, int]) -> dict[str, int]:
+    """Collapse per-mesh counts into Copper / Tin / Iron (and Other, if any)."""
+    totals = {"Copper": 0, "Tin": 0, "Iron": 0, "Other": 0}
+    for mesh, count in removed.items():
+        lowered = mesh.lower()
+        metal = next((m for m in ("Copper", "Tin", "Iron") if m.lower() in lowered), "Other")
+        totals[metal] += count
+    return {metal: count for metal, count in totals.items() if count}
+
+
 # --------------------------------------------------------------------------
 # Command line interface
 # --------------------------------------------------------------------------
@@ -1302,8 +1340,6 @@ def _dispatch(args) -> int:
 
 
 def _respawn(args, steam_id: str | None) -> int:
-    import os
-
     target = _resolve_save_file(args.save, steam_id)
     if not args.dry_run and not args.out:
         _require_game_closed(args.force)
@@ -1341,14 +1377,14 @@ def _respawn(args, steam_id: str | None) -> int:
         print(f"\nWrote {out}")
         return 0
 
-    snapshot(target.parent, tag="pre-respawn")
-    # Write beside the target, then swap it in, so a failure can't leave a
-    # half-written save. The temp name has no ".sav" so nothing mistakes it
-    # for a save if it is ever left behind.
-    tmp = target.with_name(f"{target.stem}.respawn-tmp")
-    tmp.write_bytes(new_raw)
-    os.replace(tmp, target)
-    print(f"\nReset {target.name} in place. Load '{header.display_label}' in game.")
+    left = write_respawned(target, new_raw, oodle, args.mesh)
+    if left:
+        raise TransferError(
+            f"Check failed: {left} matching records still in {target.name}; "
+            "restore the pre-respawn snapshot."
+        )
+    print(f"\nReset {target.name} in place. Read it back from disk: 0 matching records left.")
+    print(f"Load '{header.display_label}' in game.")
     return 0
 
 
@@ -1371,6 +1407,7 @@ class _App:
         self.root = root
         self.sets: list[SaveSet] = []
         self.source: Path | None = None
+        self._busy = False
 
         root.title("Bellwright Save Converter")
         root.geometry("920x580")
@@ -1426,6 +1463,9 @@ class _App:
             variable=self.include_backups,
         ).pack(side="left")
         ttk.Button(buttons, text="Restore backup", command=self.on_restore).pack(side="right")
+        ttk.Button(buttons, text="Respawn ores...", command=self.on_respawn).pack(
+            side="right", padx=4
+        )
         ttk.Button(buttons, text="Back up mine", command=self.on_backup).pack(
             side="right", padx=4
         )
@@ -1633,6 +1673,159 @@ class _App:
             messagebox.showerror("Restore failed", str(exc))
             return
         messagebox.showinfo("Done", "Restore complete.")
+
+    def on_respawn(self) -> None:
+        from tkinter import filedialog, messagebox
+
+        if self.dest is None or self._busy:
+            return
+        chosen = filedialog.askopenfilename(
+            title="Choose the save to reset ore in",
+            initialdir=str(self.dest),
+            filetypes=[("Bellwright saves", "*.sav")],
+        )
+        if not chosen:
+            return
+        target = Path(chosen)
+
+        # Stricter than imports: with the game open, its next autosave would
+        # just undo the reset, so there is no "continue anyway".
+        if game_is_running():
+            messagebox.showerror(
+                "Close Bellwright first",
+                "Bellwright is open. Close the game, then try again.",
+            )
+            return
+        header = parse_header(target)
+        if not header.recognized:
+            messagebox.showerror("Not a save", f"{target.name} is not a Bellwright save.")
+            return
+        if header.version != RESPAWN_TESTED_VERSION:
+            messagebox.showerror(
+                "Untested save format",
+                f"{target.name} is format v{header.version}, and ore reset has only been "
+                f"tested on v{RESPAWN_TESTED_VERSION}. Use the command line with --out "
+                "to try it on a copy.",
+            )
+            return
+
+        self.log(f"Reading {target.name} ({header.display_label})...")
+
+        def prepare(log):
+            oodle = Oodle(find_oodle(log=log))
+            new_raw, removed = respawn_nodes(target.read_bytes(), oodle)
+            return oodle, new_raw, removed
+
+        self._in_background(
+            prepare, lambda result, error: self._respawn_review(target, header, result, error)
+        )
+
+    def _in_background(self, job, done) -> None:
+        """Run job(log) on a worker thread, then done(result, error) on the UI thread.
+
+        Finding Oodle and repacking a save can take half a minute, which would
+        freeze the window. The worker never touches Tk: its log lines and its
+        outcome go through queues that the UI thread polls.
+        """
+        import queue
+        import threading
+
+        messages: queue.Queue = queue.Queue()
+        outcome: queue.Queue = queue.Queue()
+
+        def log_from_worker(*parts):
+            messages.put(" ".join(str(p) for p in parts))
+
+        def work():
+            try:
+                outcome.put((job(log_from_worker), None))
+            except Exception as exc:  # handed to done() on the UI thread
+                outcome.put((None, exc))
+
+        def drain():
+            while not messages.empty():
+                self.log(messages.get_nowait())
+
+        def poll():
+            drain()
+            try:
+                result, error = outcome.get_nowait()
+            except queue.Empty:
+                self.root.after(100, poll)
+                return
+            drain()
+            self._set_busy(False)
+            done(result, error)
+
+        self._set_busy(True)
+        threading.Thread(target=work, daemon=True).start()
+        self.root.after(100, poll)
+
+    def _set_busy(self, busy: bool) -> None:
+        self._busy = busy
+        self.root.configure(cursor="watch" if busy else "")
+
+    def _respawn_review(self, target: Path, header: SaveHeader, result, error) -> None:
+        from tkinter import messagebox
+
+        if error is not None:
+            self.log(f"Ore reset failed: {error}")
+            messagebox.showerror("Ore reset failed", str(error))
+            return
+
+        oodle, new_raw, removed = result
+        total = sum(removed.values())
+        if not total:
+            self.log(f"{target.name}: 0 harvested ore nodes recorded; nothing to reset.")
+            messagebox.showinfo("Nothing to reset", f"No harvested ore is recorded in {target.name}.")
+            return
+
+        metals = ore_by_metal(removed)
+        breakdown = ", ".join(f"{metal} {count}" for metal, count in metals.items())
+        self.log(f"{target.name}: {total} harvested ore nodes affected ({breakdown}).")
+        lines = "\n".join(f"{metal}:  {count}" for metal, count in metals.items())
+        if not messagebox.askokcancel(
+            "Confirm ore reset",
+            f"Reset {total} harvested ore nodes in\n"
+            f"{target.name}  ({header.display_label})?\n\n{lines}\n\n"
+            "Your save folder is backed up first.",
+        ):
+            self.log("Ore reset cancelled; nothing written.")
+            return
+        if game_is_running():  # it may have been started while we worked
+            messagebox.showerror("Close Bellwright first", "Bellwright was started; nothing was written.")
+            return
+
+        def commit(log):
+            return write_respawned(target, new_raw, oodle, log=log)
+
+        self._in_background(
+            commit,
+            lambda left, error: self._respawn_finished(target, header, total, breakdown, left, error),
+        )
+
+    def _respawn_finished(self, target: Path, header: SaveHeader, total: int,
+                          breakdown: str, left, error) -> None:
+        from tkinter import messagebox
+
+        if error is not None:
+            self.log(f"Ore reset failed: {error}")
+            messagebox.showerror("Ore reset failed", str(error))
+            return
+        self.log(f"Checked {target.name} on disk: {total} nodes reset, "
+                 f"{left} harvested ore records left.")
+        if left:
+            messagebox.showerror(
+                "Check failed",
+                f"{left} harvested ore records are still in {target.name}. "
+                "Restore the pre-respawn backup.",
+            )
+            return
+        messagebox.showinfo(
+            "Done",
+            f"Reset {total} ore nodes in {target.name} ({breakdown}).\n"
+            f"Checked on disk: 0 left.\n\nLoad '{header.display_label}' in game.",
+        )
 
 
 def run_gui() -> int:
