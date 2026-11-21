@@ -35,6 +35,10 @@ byte-for-byte copy into the receiving player's folder. Nothing in the file is re
 - The local Steam ID comes from `HKCU\Software\Valve\Steam\ActiveProcess\ActiveUser`, then the
   `AutoLogin` entry in `loginusers.vdf`, then a sole folder under `SaveGames`.
   SteamID64 = account ID + 76561197960265728.
+- Sources are found under the same `SaveGames` folder: other accounts' folders that contain saves
+  come first, then your own. Saves always live in `%LOCALAPPDATA%`, whichever drive or Steam
+  library the game is installed in, so there is nothing to scan elsewhere.
+- Importing a folder into itself is refused before anything is touched.
 
 ### Steam Cloud
 
@@ -150,11 +154,13 @@ proves the bundle imports everything it needs.
 
 | Channel | Trigger | Release |
 |---|---|---|
+| Testing | Every push to the `testing` branch | The `testing-build` pre-release, replaced each time |
 | Rolling | Every push to `main` | The `rolling` pre-release, replaced each time |
 | Stable | Pushing a `v*` tag, e.g. `git tag v1.1.0 && git push origin v1.1.0` | A release marked Latest |
 
-The README links to `releases/latest/download/BellwrightSaveConverter.exe`, which always serves
-the newest stable release. The rolling build is a pre-release so it never takes that slot.
+New work lands on `testing` first and is merged into `main` once tried. The README links to
+`releases/latest/download/BellwrightSaveConverter.exe`, which always serves the newest stable
+release; the testing and rolling builds are pre-releases, so they never take that slot.
 
 To build locally:
 

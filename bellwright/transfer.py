@@ -81,16 +81,20 @@ class PlannedCopy:
             return 0
 
 
-def plan_import(
+def _same_folder(a: Path, b: Path) -> bool:
+    import os
+
+    return os.path.normcase(str(a.resolve())) == os.path.normcase(str(b.resolve()))
+
+
+def select_files(
     source: Path,
-    dest: Path,
     names: list[str] | None = None,
     include_backups: bool = True,
-) -> list[PlannedCopy]:
-    """Work out exactly which files an import would write.
+) -> list[Path]:
+    """The save files in ``source`` belonging to the chosen save sets.
 
     ``names`` selects save sets by character name; None means all of them.
-    Nothing is written here, so the result can be shown for confirmation.
     """
     sets = scan_folder(source)
     if names:
@@ -104,7 +108,7 @@ def plan_import(
             )
         sets = [s for s in sets if s.name.lower() in wanted]
 
-    planned: list[PlannedCopy] = []
+    selected: list[Path] = []
     for save_set in sets:
         for path in save_set.files:
             if not include_backups and "_backup" in path.name.lower():
@@ -114,8 +118,30 @@ def plan_import(
             # destination folder at the source's Steam account.
             if path.name.lower() == AUTOCLOUD_FILE.lower():
                 continue
-            planned.append(PlannedCopy(source=path, dest=dest / path.name))
-    return planned
+            selected.append(path)
+    return selected
+
+
+def plan_import(
+    source: Path,
+    dest: Path,
+    names: list[str] | None = None,
+    include_backups: bool = True,
+) -> list[PlannedCopy]:
+    """Work out exactly which files an import would write.
+
+    Nothing is written here, so the result can be shown for confirmation.
+    """
+    # Importing a folder into itself would move the "existing" files -- the
+    # very files being copied -- into a backup, then fail to copy them.
+    if _same_folder(source, dest):
+        raise TransferError(
+            "Nothing to import: these are already the saves in your own folder."
+        )
+    return [
+        PlannedCopy(source=path, dest=dest / path.name)
+        for path in select_files(source, names, include_backups)
+    ]
 
 
 def execute_import(
@@ -214,16 +240,16 @@ def export_zip(
     """
     import zipfile
 
-    planned = plan_import(source, Path("."), names=names, include_backups=include_backups)
-    if not planned:
+    files = select_files(source, names, include_backups)
+    if not files:
         raise TransferError(f"No save files to export from {source}")
 
     dest_zip = dest_zip.with_suffix(".zip")
     dest_zip.parent.mkdir(parents=True, exist_ok=True)
     with zipfile.ZipFile(dest_zip, "w", zipfile.ZIP_DEFLATED) as archive:
-        for item in planned:
-            archive.write(item.source, arcname=item.source.name)
-            log(f"  + {item.source.name}")
+        for path in files:
+            archive.write(path, arcname=path.name)
+            log(f"  + {path.name}")
     log(f"Wrote {dest_zip} ({dest_zip.stat().st_size / 1e6:.1f} MB)")
     return dest_zip
 

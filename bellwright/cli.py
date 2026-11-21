@@ -10,7 +10,7 @@ from .saves import SaveSet, is_save_file, parse_header, scan_folder
 from .steam import (
     DetectionError,
     detect_local_steam_id,
-    find_candidate_sources,
+    find_save_sources,
     is_steam_id64,
     local_save_folder,
 )
@@ -66,11 +66,12 @@ def _require_game_closed(force: bool) -> None:
         )
 
 
-def _resolve_default_source(explicit: str | None) -> Path:
-    """Use --from if given, else a single obvious USB/drive folder."""
+def _resolve_default_source(explicit: str | None, steam_id: str | None) -> Path:
+    """Use --from if given, else the one other Steam account with saves on this PC."""
     if explicit:
         return Path(explicit)
-    candidates = find_candidate_sources()
+    own = steam_id or detect_local_steam_id()
+    candidates = [path for path, _ in find_save_sources(own) if path.name != own]
     if len(candidates) == 1:
         return candidates[0]
     if not candidates:
@@ -197,7 +198,11 @@ def _dispatch(args) -> int:
         return 0
 
     if args.command == "list":
-        source = local_save_folder(steam_id) if args.mine else _resolve_default_source(args.source)
+        source = (
+            local_save_folder(steam_id)
+            if args.mine
+            else _resolve_default_source(args.source, steam_id)
+        )
         with resolve_source(source) as folder:
             print(f"\n{source}\n")
             print(_format_sets(scan_folder(folder)))
@@ -206,7 +211,7 @@ def _dispatch(args) -> int:
 
     if args.command == "import":
         _require_game_closed(args.force)
-        source = _resolve_default_source(args.source)
+        source = _resolve_default_source(args.source, steam_id)
         dest = local_save_folder(steam_id)
         with resolve_source(source) as folder:
             planned = plan_import(

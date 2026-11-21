@@ -4,6 +4,8 @@ from __future__ import annotations
 
 from pathlib import Path
 
+from .saves import is_save_file
+
 
 #: SteamID64 = account id + this. Used to convert the 32-bit ids Steam stores
 #: in the registry and in ``userdata`` folder names.
@@ -132,25 +134,32 @@ def local_save_folder(steam_id: str | None = None) -> Path:
     return savegames_root() / (steam_id or detect_local_steam_id())
 
 
-def find_candidate_sources() -> list[Path]:
-    r"""Look for ``<drive>:\<SteamID64>`` folders, e.g. on a handed-over USB stick.
+def _has_saves(folder: Path) -> bool:
+    try:
+        return any(p.is_file() and is_save_file(p) for p in folder.iterdir())
+    except OSError:
+        return False
 
-    Used to prefill the GUI's source box so the common case needs no typing.
+
+def find_save_sources(own_steam_id: str | None) -> list[tuple[Path, str]]:
+    """Save folders to offer as a source, most likely first, each with a description.
+
+    Other Steam accounts' saves on this PC come first, then your own -- so the
+    window shows your saves even when there is nothing to import.
     """
-    import string
-
-    found: list[Path] = []
-    for letter in string.ascii_uppercase:
-        drive = Path(f"{letter}:\\")
-        try:
-            if not drive.is_dir():
-                continue
-            for child in drive.iterdir():
-                if child.is_dir() and is_steam_id64(child.name):
-                    found.append(child)
-        except OSError:
-            continue  # unreadable or empty drive
-    return found
+    sources: list[tuple[Path, str]] = []
+    root = savegames_root()
+    if root.is_dir():
+        others = sorted(
+            folder for folder in root.iterdir()
+            if folder.is_dir() and is_steam_id64(folder.name)
+            and folder.name != own_steam_id and _has_saves(folder)
+        )
+        sources += [(folder, "another Steam account on this PC") for folder in others]
+        own = root / own_steam_id if own_steam_id else None
+        if own is not None and own.is_dir():
+            sources.append((own, "your saves"))
+    return sources
 
 
 def steam_library_paths() -> list[Path]:

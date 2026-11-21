@@ -12,7 +12,7 @@ from pathlib import Path
 from .oodle import Oodle, find_oodle
 from .respawn import RESPAWN_TESTED_VERSION, ore_by_metal, respawn_nodes, write_respawned
 from .saves import SaveHeader, SaveSet, parse_header, scan_folder
-from .steam import DetectionError, detect_local_steam_id, find_candidate_sources, local_save_folder
+from .steam import DetectionError, detect_local_steam_id, find_save_sources, local_save_folder
 from .transfer import (
     TransferError,
     backups_root,
@@ -61,9 +61,12 @@ class _App:
         picker.pack(fill="x")
         ttk.Label(picker, text="Source:").pack(side="left")
         self.source_var = tk.StringVar()
-        ttk.Entry(picker, textvariable=self.source_var).pack(
-            side="left", fill="x", expand=True, padx=6
-        )
+        # Dropdown entries are "<path>   (<description>)"; refresh() maps them
+        # back to the path. Typing a path by hand still works.
+        self._source_labels: dict[str, Path] = {}
+        self.source_box = ttk.Combobox(picker, textvariable=self.source_var)
+        self.source_box.pack(side="left", fill="x", expand=True, padx=6)
+        self.source_box.bind("<<ComboboxSelected>>", lambda _event: self.refresh())
         ttk.Button(picker, text="Folder...", command=self._pick_folder).pack(side="left")
         ttk.Button(picker, text="Zip...", command=self._pick_zip).pack(side="left", padx=4)
         ttk.Button(picker, text="Refresh", command=self.refresh).pack(side="left")
@@ -106,9 +109,11 @@ class _App:
         self.log_box = tk.Text(root, height=8, wrap="word", state="disabled")
         self.log_box.pack(fill="x", padx=12, pady=(0, 12))
 
-        candidates = find_candidate_sources()
-        if candidates:
-            self.source_var.set(str(candidates[0]))
+        for path, description in find_save_sources(self.steam_id):
+            self._source_labels[f"{path}   ({description})"] = path
+        self.source_box["values"] = list(self._source_labels)
+        if self._source_labels:
+            self.source_var.set(next(iter(self._source_labels)))
             self.refresh()
         else:
             self.log("Choose the folder or zip holding the saves you were given.")
@@ -169,7 +174,7 @@ class _App:
         if not raw:
             return
 
-        source = Path(raw)
+        source = self._source_labels.get(raw) or Path(raw)
         try:
             with resolve_source(source) as folder:
                 self.sets = scan_folder(folder)
@@ -193,7 +198,9 @@ class _App:
                 ),
             )
         self.log(f"Found {len(self.sets)} save set(s) in {source}")
-        if self.sets:
+        if self.dest is not None and source == self.dest:
+            self.log("These are your own saves. To import, choose another source.")
+        elif self.sets:
             self.log("Pick one and press Import, or import everything by selecting nothing.")
 
     def on_import(self) -> None:

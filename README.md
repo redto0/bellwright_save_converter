@@ -24,9 +24,13 @@ the next launch, choose the **local** files.
 
 ## Usage
 
-The .exe opens the window. To use the command line instead, run from source with Python 3.10 or
-later (64-bit for ore respawn): double-click `bellwright_save_converter.py` for the window, or use
-the commands below. Keep the `bellwright` folder next to it.
+The .exe opens the window, which finds the saves on this PC by itself: another Steam account's
+saves first if there are any, otherwise your own. Pick a different source from the dropdown, or
+choose a folder or zip.
+
+To use the command line instead, run from source with Python 3.10 or later (64-bit for ore
+respawn): double-click `bellwright_save_converter.py` for the window, or use the commands below.
+Keep the `bellwright` folder next to it.
 
 ### Take over a world
 
@@ -38,7 +42,7 @@ python bellwright_save_converter.py list --from E:\76561198034828952
 python bellwright_save_converter.py import --save RedDevil
 ```
 
-Without `--from`, the tool looks for a `<drive>:\<SteamID64>` folder, such as a USB stick.
+Without `--from`, the tool uses another Steam account's saves on this PC, if there is exactly one.
 
 ### Hand a world back
 
