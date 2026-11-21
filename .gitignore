@@ -19,3 +19,8 @@ dist/
 *.vdf
 *.zip
 *.7z
+
+# Oodle is RAD/Epic's proprietary library. The respawn command borrows it from
+# another installed game; a copy dropped beside the script must not be committed.
+*.dll
+*.respawn-tmp

@@ -9,13 +9,17 @@ Whoever hosts needs the world files sitting in *their own* Steam ID folder, so
 handing a campaign back and forth means copying files between two ID-named
 folders every session. This automates that.
 
-Important: save files are copied **byte for byte**. Ownership is carried by the
-folder name, not by anything inside the file, so there is nothing to rewrite --
-and the payload is compressed anyway, so rewriting it would not be safe. Any
-version of this tool that edits save bytes is doing the wrong thing.
+Important: transfers copy save files **byte for byte**. Ownership is carried by
+the folder name, not by anything inside the file, so moving a world between
+accounts never needs to rewrite it.
+
+The one command that does edit a save is ``respawn``, which resets harvested
+ore nodes. It is opt-in, snapshots the folder first, and proves its output
+round-trips before writing anything.
 
 Run with no arguments for the GUI, or with arguments for the CLI.
-Standard library only; no install step.
+Standard library only. ``respawn`` also needs Oodle's oo2core DLL, which it
+finds in other installed games.
 """
 
 from __future__ import annotations
@@ -679,6 +683,403 @@ def resolve_source(source: Path):
 
 
 # --------------------------------------------------------------------------
+# Harvest node respawn
+# --------------------------------------------------------------------------
+#
+# The one feature that edits a save. After the header the file holds a UE5
+# compressed archive: an ARCHIVE_TAG header, a chunk table, then 128 KiB chunks
+# compressed with Oodle Kraken. Decompressed, the world is protobuf.
+#
+# Every foliage instance the player has touched -- an ore chunk picked up, a
+# deposit mined -- has one MistFoliageDataComponent record, keyed by (mesh type,
+# instance id). Untouched foliage has no record at all, so deleting a node's
+# record puts it back to its pristine, harvestable state. Verified in game for
+# the ore types below on format version 8.
+
+ARCHIVE_TAG = 0x222222229E2A83C1
+FOLIAGE_DATA_CLASS = "/Script/Mist.MistFoliageDataComponent"
+
+#: Copper and tin surface pickups, plus copper, iron and tin rock deposits.
+#: Matched exactly: a loose "ore" pattern would also hit every "Forest" mesh.
+ORE_MESH_PATTERN = r"SM_(CopperOre_\d+|Tin|MEDIUM_(Copper|Iron|Tin)Rock_\d+)"
+
+RESPAWN_TESTED_VERSION = 8
+
+_OODLE_KRAKEN = 8
+_OODLE_LEVEL_NORMAL = 4
+
+# Body layout as protobuf field numbers: 8 is the global string table and 21
+# the world. Inside the world, 2 > 2 are record containers holding records in 2.
+_BODY_STRINGS = 8
+_BODY_WORLD = 21
+_RECORD_CLASS = 5
+_RECORD_IDENTITY = 4
+
+_DROP = object()
+
+
+class OodleError(TransferError):
+    """The Oodle library could not be found or used."""
+
+
+def _steam_library_paths() -> list[Path]:
+    """Every Steam library folder listed in libraryfolders.vdf."""
+    import re
+
+    steam = steam_install_path()
+    if steam is None:
+        return []
+    libraries = [steam]
+    try:
+        text = (steam / "steamapps" / "libraryfolders.vdf").read_text(
+            encoding="utf-8", errors="replace"
+        )
+    except OSError:
+        return libraries
+    for raw in re.findall(r'"path"\s*"([^"]+)"', text):
+        path = Path(raw.replace("\\\\", "\\"))
+        if path.is_dir() and path not in libraries:
+            libraries.append(path)
+    return libraries
+
+
+def _oodle_version(path: Path) -> int:
+    import re
+
+    match = re.search(r"oo2core_(\d+)_win64", path.name, re.IGNORECASE)
+    return int(match.group(1)) if match else 0
+
+
+def _is_oodle_dll(name: str) -> bool:
+    lowered = name.lower()
+    return lowered.startswith("oo2core_") and lowered.endswith("_win64.dll")
+
+
+def find_oodle(explicit: str | None = None, log=print) -> Path:
+    r"""Locate an oo2core_*_win64.dll to decompress saves with.
+
+    Bellwright compiles Oodle into its executable, so there is no DLL to borrow
+    from the game itself. Plenty of other games ship it standalone (Warframe
+    under Tools\Oodle, Destiny 2, ...) and any of them will do -- the format
+    does not depend on which game the library came from.
+
+    Search order: --oodle, the BELLWRIGHT_OODLE environment variable, next to
+    this script, then every Steam library.
+    """
+    import os
+
+    if explicit:
+        path = Path(explicit)
+        if not path.is_file():
+            raise OodleError(f"No such file: {path}")
+        return path
+
+    env = os.environ.get("BELLWRIGHT_OODLE")
+    if env and Path(env).is_file():
+        return Path(env)
+
+    here = Path(__file__).resolve().parent
+    beside = [p for p in here.iterdir() if p.is_file() and _is_oodle_dll(p.name)]
+    if beside:
+        return max(beside, key=_oodle_version)
+
+    log("Searching Steam libraries for an Oodle DLL...")
+    found: list[Path] = []
+    for library in _steam_library_paths():
+        common = library / "steamapps" / "common"
+        if not common.is_dir():
+            continue
+        base_depth = len(common.parts)
+        for dirpath, dirnames, filenames in os.walk(common):
+            if len(Path(dirpath).parts) - base_depth >= 6:
+                dirnames[:] = []
+            found.extend(Path(dirpath) / name for name in filenames if _is_oodle_dll(name))
+    if not found:
+        raise OodleError(
+            "No oo2core_*_win64.dll found. Copy one from any game that ships it "
+            "next to this script, or pass --oodle <path>."
+        )
+    best = max(found, key=_oodle_version)
+    log(f"Using {best}  (copy it next to this script to skip the search)")
+    return best
+
+
+class Oodle:
+    """The two Oodle calls the save format needs, over ctypes."""
+
+    def __init__(self, dll: Path):
+        import ctypes
+
+        if struct.calcsize("P") != 8:
+            raise OodleError("Oodle's win64 DLL needs 64-bit Python.")
+        try:
+            lib = ctypes.WinDLL(str(dll))
+        except OSError as exc:
+            raise OodleError(f"Could not load {dll}: {exc}") from exc
+
+        size, ptr, num = ctypes.c_ssize_t, ctypes.c_void_p, ctypes.c_int
+        lib.OodleLZ_Decompress.restype = size
+        lib.OodleLZ_Decompress.argtypes = [
+            ptr, size, ptr, size, num, num, num, ptr, size, ptr, ptr, ptr, size, num,
+        ]
+        lib.OodleLZ_Compress.restype = size
+        lib.OodleLZ_Compress.argtypes = [num, ptr, size, ptr, num, ptr, ptr, ptr, ptr, size]
+        self._ctypes = ctypes
+        self._lib = lib
+
+    def decompress(self, src: bytes, raw_len: int) -> bytes:
+        dst = self._ctypes.create_string_buffer(raw_len)
+        # fuzz-safe on, no CRC check, quiet, decode all thread phases
+        got = self._lib.OodleLZ_Decompress(
+            src, len(src), dst, raw_len, 1, 0, 0, None, 0, None, None, None, 0, 3
+        )
+        if got != raw_len:
+            raise OodleError(f"Oodle decompressed {got} bytes, expected {raw_len}")
+        return dst.raw
+
+    def compress(self, raw: bytes) -> bytes:
+        dst = self._ctypes.create_string_buffer(len(raw) + 65536)
+        got = self._lib.OodleLZ_Compress(
+            _OODLE_KRAKEN, raw, len(raw), dst, _OODLE_LEVEL_NORMAL, None, None, None, None, 0
+        )
+        if got <= 0:
+            raise OodleError("Oodle compression failed")
+        return dst.raw[:got]
+
+
+@dataclasses.dataclass
+class _Archive:
+    offset: int                      # where ARCHIVE_TAG starts
+    chunk_size: int
+    compressor: int
+    body_size: int
+    chunks: list[tuple[int, int]]    # (compressed, uncompressed) per chunk
+    data_offset: int
+
+
+def _parse_archive(raw: bytes) -> _Archive:
+    offset = raw.find(struct.pack("<Q", ARCHIVE_TAG))
+    if offset < 0:
+        raise TransferError("No compressed archive found in this save.")
+    o = offset + 8
+    (chunk_size,) = struct.unpack_from("<q", raw, o)
+    compressor = raw[o + 8]
+    _compressed_total, body_size = struct.unpack_from("<qq", raw, o + 9)
+    o += 25
+    count = -(-body_size // chunk_size)
+    chunks = [struct.unpack_from("<qq", raw, o + 16 * i) for i in range(count)]
+    return _Archive(offset, chunk_size, compressor, body_size, chunks, o + 16 * count)
+
+
+def unpack_body(raw: bytes, oodle: Oodle) -> bytes:
+    """Decompress a save's protobuf body."""
+    archive = _parse_archive(raw)
+    out = bytearray()
+    o = archive.data_offset
+    for compressed, uncompressed in archive.chunks:
+        out += oodle.decompress(raw[o:o + compressed], uncompressed)
+        o += compressed
+    if len(out) != archive.body_size:
+        raise TransferError("Decompressed size does not match the archive header.")
+    return bytes(out)
+
+
+def pack_body(original: bytes, body: bytes, oodle: Oodle) -> bytes:
+    """Rebuild a save around a new body, keeping the original header."""
+    archive = _parse_archive(original)
+    size = archive.chunk_size
+    pieces = [oodle.compress(body[i:i + size]) for i in range(0, len(body), size)]
+    table = b"".join(
+        struct.pack("<qq", len(piece), min(size, len(body) - i * size))
+        for i, piece in enumerate(pieces)
+    )
+    header = bytearray(original[:archive.offset])
+    # The engine sizes its read from this field; it must match the new body.
+    struct.pack_into("<Q", header, _OFF_BODY_SIZE, len(body))
+    return (
+        bytes(header)
+        + struct.pack("<Qq", ARCHIVE_TAG, size)
+        + bytes([archive.compressor])
+        + struct.pack("<qq", sum(len(p) for p in pieces), len(body))
+        + table
+        + b"".join(pieces)
+    )
+
+
+def _pb_varint(buf: bytes, o: int) -> tuple[int, int]:
+    result = shift = 0
+    while True:
+        byte = buf[o]
+        o += 1
+        result |= (byte & 0x7F) << shift
+        if byte < 0x80:
+            return result, o
+        shift += 7
+
+
+def _pb_encode_varint(n: int) -> bytes:
+    out = bytearray()
+    while True:
+        byte = n & 0x7F
+        n >>= 7
+        if n:
+            out.append(byte | 0x80)
+        else:
+            out.append(byte)
+            return bytes(out)
+
+
+def _pb_fields(buf: bytes, start: int, end: int):
+    """Yield (field, wire_type, key_start, value_start, value_end, int_value)."""
+    o = start
+    while o < end:
+        key_start = o
+        key, o = _pb_varint(buf, o)
+        field, wire = key >> 3, key & 7
+        if wire == 0:
+            value, nxt = _pb_varint(buf, o)
+            yield field, wire, key_start, o, nxt, value
+            o = nxt
+        elif wire == 1:
+            yield field, wire, key_start, o, o + 8, None
+            o += 8
+        elif wire == 5:
+            yield field, wire, key_start, o, o + 4, None
+            o += 4
+        elif wire == 2:
+            length, o = _pb_varint(buf, o)
+            if o + length > end:
+                raise TransferError("Corrupt save body: a field overruns its message.")
+            yield field, wire, key_start, o, o + length, length
+            o += length
+        else:
+            raise TransferError(f"Corrupt save body: unknown wire type {wire}.")
+    if o != end:
+        raise TransferError("Corrupt save body: misaligned message.")
+
+
+def _pb_spans(buf: bytes, start: int, end: int, field: int) -> list[tuple[int, int]]:
+    """Value ranges of every length-delimited occurrence of one field."""
+    return [(vs, ve) for f, wire, _k, vs, ve, _v in _pb_fields(buf, start, end)
+            if f == field and wire == 2]
+
+
+def _pb_rebuild(buf: bytes, start: int, end: int, handler) -> bytes:
+    """Re-emit a message, letting handler drop or replace length-delimited fields.
+
+    handler(field, value_start, value_end) returns None to keep the field
+    verbatim, _DROP to remove it, or bytes to use as its new payload.
+    """
+    out = bytearray()
+    for field, wire, key_start, vs, ve, _v in _pb_fields(buf, start, end):
+        action = handler(field, vs, ve) if wire == 2 else None
+        if action is None:
+            out += buf[key_start:ve]
+        elif action is not _DROP:
+            out += _pb_encode_varint((field << 3) | 2) + _pb_encode_varint(len(action)) + action
+    return bytes(out)
+
+
+def _world_record_spans(body: bytes) -> list[tuple[int, int]]:
+    world = _pb_spans(body, 0, len(body), _BODY_WORLD)
+    if len(world) != 1:
+        raise TransferError("Unsupported save layout: no world data.")
+    level = _pb_spans(body, *world[0], 2)
+    if len(level) != 1:
+        raise TransferError("Unsupported save layout: unexpected world structure.")
+    return [rec for box in _pb_spans(body, *level[0], 2) for rec in _pb_spans(body, *box, 2)]
+
+
+def _foliage_mesh(body: bytes, start: int, end: int, class_index: int,
+                  names: list[str]) -> str | None:
+    """Mesh type of a foliage record, or None for any other kind of record."""
+    cls = identity = None
+    for field, wire, _k, vs, ve, value in _pb_fields(body, start, end):
+        if field == _RECORD_CLASS and wire == 0:
+            cls = value
+        elif field == _RECORD_IDENTITY and wire == 2:
+            identity = (vs, ve)
+    if cls != class_index or identity is None:
+        return None
+    for field, wire, _k, _vs, _ve, value in _pb_fields(body, *identity):
+        if field == 1 and wire == 0:
+            return names[value] if value < len(names) else None
+    return None
+
+
+def strip_foliage_records(body: bytes, mesh_pattern: str) -> tuple[bytes, dict[str, int]]:
+    """Remove foliage records whose mesh type fully matches mesh_pattern."""
+    import collections
+    import re
+
+    names = [body[vs:ve].decode("utf-8", "replace")
+             for vs, ve in _pb_spans(body, 0, len(body), _BODY_STRINGS)]
+    try:
+        class_index = names.index(FOLIAGE_DATA_CLASS)
+    except ValueError:
+        raise TransferError("Unsupported save layout: no foliage records.") from None
+    matcher = re.compile(mesh_pattern)
+    removed: collections.Counter = collections.Counter()
+
+    def in_container(field, vs, ve):
+        if field == 2:
+            mesh = _foliage_mesh(body, vs, ve, class_index, names)
+            if mesh is not None and matcher.fullmatch(mesh):
+                removed[mesh] += 1
+                return _DROP
+        return None
+
+    def in_level(field, vs, ve):
+        return _pb_rebuild(body, vs, ve, in_container) if field == 2 else None
+
+    def in_world(field, vs, ve):
+        return _pb_rebuild(body, vs, ve, in_level) if field == 2 else None
+
+    def in_body(field, vs, ve):
+        return _pb_rebuild(body, vs, ve, in_world) if field == _BODY_WORLD else None
+
+    return _pb_rebuild(body, 0, len(body), in_body), dict(removed)
+
+
+def _verify_strip(before: bytes, after: bytes, removed_total: int) -> None:
+    """Prove that only the intended records went away."""
+    old = [before[s:e] for s, e in _world_record_spans(before)]
+    new = [after[s:e] for s, e in _world_record_spans(after)]
+    if len(old) - len(new) != removed_total:
+        raise TransferError("Record count after editing does not add up; not writing.")
+    remaining = iter(old)
+    for record in new:
+        if not any(record == candidate for candidate in remaining):
+            raise TransferError("A record that should have survived changed; not writing.")
+
+    def outside_world(body: bytes):
+        return [(f, body[vs:ve]) for f, _w, _k, vs, ve, _v in _pb_fields(body, 0, len(body))
+                if f != _BODY_WORLD]
+
+    if outside_world(before) != outside_world(after):
+        raise TransferError("Data outside the world changed; not writing.")
+
+
+def respawn_nodes(raw: bytes, oodle: Oodle,
+                  mesh_pattern: str = ORE_MESH_PATTERN) -> tuple[bytes, dict[str, int]]:
+    """Return a copy of a save with matching harvest nodes reset, and what was reset.
+
+    Checked end to end before returning: every surviving record is byte-identical
+    and in order, and the repacked file decompresses back to exactly the edited
+    body.
+    """
+    body = unpack_body(raw, oodle)
+    new_body, removed = strip_foliage_records(body, mesh_pattern)
+    if not removed:
+        return raw, removed
+    _verify_strip(body, new_body, sum(removed.values()))
+    new_raw = pack_body(raw, new_body, oodle)
+    if unpack_body(new_raw, oodle) != new_body:
+        raise TransferError("Recompressed save did not round-trip; not writing.")
+    return new_raw, removed
+
+
+# --------------------------------------------------------------------------
 # Command line interface
 # --------------------------------------------------------------------------
 
@@ -735,6 +1136,21 @@ def _resolve_default_source(explicit: str | None) -> Path:
     raise TransferError(f"Several possible sources ({listing}). Pick one with --from.")
 
 
+def _resolve_save_file(name: str, steam_id: str | None) -> Path:
+    """A path to a .sav, or a slot name like RedDevil_1 in your own folder."""
+    candidate = Path(name)
+    if candidate.is_file():
+        return candidate
+    folder = local_save_folder(steam_id)
+    filename = name if name.lower().endswith(".sav") else f"{name}.sav"
+    path = folder / filename
+    if path.is_file():
+        return path
+    slots = sorted(p for p in folder.glob("*.sav") if is_save_file(p))
+    listing = "\n".join(f"  {p.stem:28} {parse_header(p).display_label}" for p in slots)
+    raise TransferError(f"No save named {filename} in {folder}. Saves there:\n{listing}")
+
+
 def build_parser():
     import argparse
 
@@ -771,6 +1187,25 @@ def build_parser():
     p_restore = sub.add_parser("restore", help="restore a snapshot")
     p_restore.add_argument("archive", nargs="?", help="snapshot .zip (default: the newest)")
     p_restore.add_argument("--force", action="store_true", help="proceed even if the game is open")
+
+    p_respawn = sub.add_parser(
+        "respawn", help="reset harvested ore nodes in one of your saves (experimental)"
+    )
+    p_respawn.add_argument("save", help="slot in your folder, e.g. RedDevil_1, or a path to a .sav")
+    p_respawn.add_argument("--dry-run", action="store_true", help="report what would be reset")
+    p_respawn.add_argument("--out", help="write the result here instead of replacing the save")
+    p_respawn.add_argument("--oodle", help="path to an oo2core_*_win64.dll (default: search)")
+    p_respawn.add_argument(
+        "--mesh",
+        default=ORE_MESH_PATTERN,
+        help="regex of foliage mesh types to reset (default: copper, tin and iron ore; "
+        "only the default has been tested in game)",
+    )
+    p_respawn.add_argument(
+        "--force",
+        action="store_true",
+        help="proceed even if the game is open or the save format is untested",
+    )
 
     return parser
 
@@ -860,7 +1295,61 @@ def _dispatch(args) -> int:
             execute_import(plan_import(folder, dest))
         return 0
 
+    if args.command == "respawn":
+        return _respawn(args, steam_id)
+
     raise TransferError(f"Unknown command: {args.command}")
+
+
+def _respawn(args, steam_id: str | None) -> int:
+    import os
+
+    target = _resolve_save_file(args.save, steam_id)
+    if not args.dry_run and not args.out:
+        _require_game_closed(args.force)
+
+    header = parse_header(target)
+    if not header.recognized:
+        raise TransferError(f"{target.name} is not a Bellwright save.")
+    if header.version != RESPAWN_TESTED_VERSION and not args.force:
+        raise TransferError(
+            f"{target.name} is format v{header.version}; respawn is only tested on "
+            f"v{RESPAWN_TESTED_VERSION}. Try --out first, then --force."
+        )
+
+    oodle = Oodle(find_oodle(args.oodle))
+    new_raw, removed = respawn_nodes(target.read_bytes(), oodle, args.mesh)
+
+    when = header.saved.strftime("%Y-%m-%d %H:%M") if header.saved else "unknown"
+    print(f"\n{target.name}  ({header.display_label}, saved {when})")
+    if not removed:
+        print("  No harvested nodes of that kind are recorded; nothing to reset.")
+        return 0
+    for mesh, count in sorted(removed.items()):
+        print(f"  {count:5}  {mesh}")
+    print(f"  {sum(removed.values()):5}  nodes reset")
+
+    if args.dry_run:
+        print("\nDry run: nothing written.")
+        return 0
+
+    if args.out:
+        out = Path(args.out)
+        if out.exists():
+            raise TransferError(f"{out} already exists; not overwriting.")
+        out.write_bytes(new_raw)
+        print(f"\nWrote {out}")
+        return 0
+
+    snapshot(target.parent, tag="pre-respawn")
+    # Write beside the target, then swap it in, so a failure can't leave a
+    # half-written save. The temp name has no ".sav" so nothing mistakes it
+    # for a save if it is ever left behind.
+    tmp = target.with_name(f"{target.stem}.respawn-tmp")
+    tmp.write_bytes(new_raw)
+    os.replace(tmp, target)
+    print(f"\nReset {target.name} in place. Load '{header.display_label}' in game.")
+    return 0
 
 
 # --------------------------------------------------------------------------

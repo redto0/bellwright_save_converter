@@ -3,7 +3,10 @@
 Move a Bellwright co-op world between two Steam accounts, so whoever is hosting tonight has the
 save in their own folder.
 
-Single file, standard library only, no install.
+It can also reset harvested ore nodes in a save — see [Respawning ore nodes](#respawning-ore-nodes).
+
+Single file, standard library only, no install. (`respawn` also borrows an Oodle DLL from another
+installed game.)
 
 ## Why this exists
 
@@ -18,11 +21,12 @@ two ID-named folders every session, which is fiddly and easy to get wrong at 1am
 
 ## How it works
 
-**Saves are copied byte for byte. Nothing inside them is modified.**
+**Transfers copy saves byte for byte. Nothing inside them is modified.**
 
-Ownership is carried by the *folder name*, not by anything in the file. A save's body is
-compressed, so rewriting it would not be safe even if it were necessary — and it isn't. Any tool
-that claims to "convert" the contents of a Bellwright save is doing something you don't want.
+Ownership is carried by the *folder name*, not by anything in the file, so moving a world between
+accounts never needs to rewrite it. Any tool that claims to "convert" the contents of a Bellwright
+save for a transfer is doing something you don't want. The only command here that edits a save is
+`respawn`, and only because you asked it to.
 
 For transfers the header is only read, to show you which save is which:
 
@@ -66,6 +70,7 @@ Drop `--dry-run` to actually copy. With no `--from`, it finds a `<drive>:\<Steam
 | `export --to X.zip` | Zip saves to hand to the other player |
 | `backup` | Snapshot your current saves |
 | `restore [archive]` | Restore a snapshot (newest if unnamed) |
+| `respawn SLOT` | Reset harvested ore nodes in one save (`--dry-run`, `--out FILE`) |
 
 Your Steam ID is detected from the registry, then `loginusers.vdf`, then the save folder — nothing
 is hardcoded. Override with `--steam-id` if needed.
@@ -100,6 +105,40 @@ imported gets replaced by whatever the cloud had. For a long swapping session it
 off Steam Cloud for Bellwright in its properties.
 
 If it does go wrong, `restore` puts back the snapshot taken before the import.
+
+## Respawning ore nodes
+
+Bellwright only saves the foliage you've interacted with: every ore chunk picked up or deposit
+mined gets one record in the save, and untouched nodes have none. Deleting a node's record puts it
+back in its untouched, harvestable state.
+
+```bash
+python bellwright_save_converter.py respawn RedDevil_1 --dry-run
+```
+
+```bash
+python bellwright_save_converter.py respawn RedDevil_1
+```
+
+`RedDevil_1` is the slot's filename without `.sav`; run with a wrong name and it lists your slots
+with their in-game labels. It resets copper and tin surface pickups plus copper, iron and tin rock
+deposits — that set is what was tested in game.
+
+- **Close the game first.** In-place writes refuse to run while it's open.
+- **A snapshot is taken first** (`pre-respawn-*.zip` in `SaveBackups`), and the edit is checked
+  before writing: every other record must come through byte-identical and in order, and the
+  repacked file must decompress back to exactly the edited data.
+- **`--out FILE`** writes the result somewhere else and leaves the save alone — use it to try
+  this on a copy first.
+- **Format v8 only.** A game patch that changes the save format makes it refuse until checked;
+  `--force` overrides.
+- Steam Cloud will upload the edited save. That's what you want here, but it also means the old
+  ore state is only recoverable from the snapshot.
+
+It needs Oodle, the compression library Bellwright uses. Bellwright builds it into its executable,
+but many games ship it as `oo2core_9_win64.dll` (Warframe, Destiny 2, ...) and any copy works. The
+tool searches your Steam libraries for one; copy it next to the script, set `BELLWRIGHT_OODLE`, or
+pass `--oodle` to skip the search.
 
 ## Notes
 
