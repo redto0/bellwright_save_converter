@@ -130,14 +130,34 @@ The tool looks for one in this order:
 
 1. `--oodle PATH`
 2. the `BELLWRIGHT_OODLE` environment variable
-3. the folder containing `bellwright_save_converter.py`
-4. every Steam library (slow; copy the DLL next to the script to skip this)
+3. the folder containing `bellwright_save_converter.py`, or the .exe in a packaged build
+4. every Steam library (slow; copy the DLL next to the program to skip this)
 
 Only `OodleLZ_Decompress` and `OodleLZ_Compress` (Kraken, level Normal) are used. Oodle is
-proprietary, so `.gitignore` excludes `*.dll`.
+proprietary, so it is never bundled into the .exe or a release, and `.gitignore` excludes `*.dll`.
 
 ### Format version
 
 Changing `0x004` from 8 to 7 does not make the game repeat its v7-to-v8 migration. The engine reads
 the v8 body with the v7 deserializer and aborts with `BulkData compressed header read error`
 (`Archive.cpp`, line 797).
+
+## Building the .exe
+
+`.github/workflows/build.yml` builds a single windowed executable with PyInstaller on a Windows
+runner. Every push to `main` produces it as a workflow artifact; pushing a `v*` tag also publishes
+it as a GitHub Release. Before uploading, the workflow runs the built exe with `--help` and
+requires a clean exit, which proves the bundle imports everything it needs.
+
+To build locally:
+
+```bash
+python -m pip install "pyinstaller>=6.10,<7"
+```
+
+```bash
+pyinstaller --onefile --windowed --name BellwrightSaveConverter --hidden-import bellwright.gui bellwright_save_converter.py
+```
+
+The result is `dist\BellwrightSaveConverter.exe`. It is not code-signed, so Windows SmartScreen
+warns on first launch, and some antivirus products flag unsigned PyInstaller builds.

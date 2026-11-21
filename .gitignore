@@ -24,3 +24,6 @@ dist/
 # another installed game; a copy dropped beside the script must not be committed.
 *.dll
 *.respawn-tmp
+
+# PyInstaller
+*.spec

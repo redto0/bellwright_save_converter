@@ -2,12 +2,16 @@
 
 Move a Bellwright world between two Steam accounts, and reset harvested ore nodes.
 
-## Requirements
+## Download
 
-- Windows with Python 3.10 or later.
-- Ore respawn also needs 64-bit Python and an Oodle library (`oo2core_9_win64.dll`) from any
-  installed game that ships one. The tool finds it automatically; see
-  [TECHNICAL.md](TECHNICAL.md#oodle).
+1. Download **BellwrightSaveConverter.exe** from the
+   [latest release](https://github.com/redto0/bellwright_save_converter/releases/latest).
+2. Double-click it. The first time, Windows may show "Windows protected your PC" because the app
+   is not code-signed: click **More info**, then **Run anyway**.
+3. To keep it handy, right-click its taskbar icon while it is open and choose **Pin to taskbar**.
+
+Ore respawn needs an Oodle library (`oo2core_9_win64.dll`) from a game installed on the same PC,
+such as Warframe or Destiny 2. It is found automatically; see [TECHNICAL.md](TECHNICAL.md#oodle).
 
 ## Before you start
 
@@ -16,8 +20,9 @@ the next launch, choose the **local** files.
 
 ## Usage
 
-Double-click `bellwright_save_converter.py` to open the window, or use the command line below.
-Keep the `bellwright` folder next to it, including when copying the tool to another PC.
+The .exe opens the window. To use the command line instead, run from source with Python 3.10 or
+later (64-bit for ore respawn): double-click `bellwright_save_converter.py` for the window, or use
+the commands below. Keep the `bellwright` folder next to it.
 
 ### Take over a world
 

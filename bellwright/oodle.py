@@ -38,9 +38,10 @@ def find_oodle(explicit: str | None = None, log=print) -> Path:
     does not depend on which game the library came from.
 
     Search order: --oodle, the BELLWRIGHT_OODLE environment variable, next to
-    the launcher script, then every Steam library.
+    the program (the launcher script, or the .exe), then every Steam library.
     """
     import os
+    import sys
 
     if explicit:
         path = Path(explicit)
@@ -52,8 +53,13 @@ def find_oodle(explicit: str | None = None, log=print) -> Path:
     if env and Path(env).is_file():
         return Path(env)
 
-    here = Path(__file__).resolve().parent.parent  # beside the launcher script
-    beside = [p for p in here.iterdir() if p.is_file() and _is_oodle_dll(p.name)]
+    # In a PyInstaller build __file__ points into a temporary extraction folder,
+    # so look beside the .exe instead.
+    if getattr(sys, "frozen", False):
+        here = Path(sys.executable).resolve().parent
+    else:
+        here = Path(__file__).resolve().parent.parent  # beside the launcher script
+    beside =[p for p in here.iterdir() if p.is_file() and _is_oodle_dll(p.name)]
     if beside:
         return max(beside, key=_oodle_version)
 
@@ -71,10 +77,10 @@ def find_oodle(explicit: str | None = None, log=print) -> Path:
     if not found:
         raise OodleError(
             "No oo2core_*_win64.dll found. Copy one from any game that ships it "
-            "next to bellwright_save_converter.py, or pass --oodle <path>."
+            "next to this program, or pass --oodle <path>."
         )
     best = max(found, key=_oodle_version)
-    log(f"Using {best}  (copy it next to bellwright_save_converter.py to skip the search)")
+    log(f"Using {best}  (copy it next to this program to skip the search)")
     return best
 
 
