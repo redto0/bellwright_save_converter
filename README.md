@@ -2,12 +2,12 @@
 
 Move a Bellwright world between two Steam accounts, and reset harvested ore nodes.
 
+[![Download for Windows](https://img.shields.io/badge/Download_for_Windows-BellwrightSaveConverter.exe-2ea44f?style=for-the-badge)](https://github.com/redto0/bellwright_save_converter/releases/latest/download/BellwrightSaveConverter.exe)
+
 ## Download
 
-1. Download
-   [**BellwrightSaveConverter.exe**](https://github.com/redto0/bellwright_save_converter/releases/latest/download/BellwrightSaveConverter.exe),
-   the current stable version.
-2. Double-click it. The first time, Windows may show "Windows protected your PC" because the app
+1. Click **Download for Windows** above to get the current stable version.
+2. Double-click the downloaded file. The first time, Windows may show "Windows protected your PC" because the app
    is not code-signed: click **More info**, then **Run anyway**.
 3. To keep it handy, right-click its taskbar icon while it is open and choose **Pin to taskbar**.
 
